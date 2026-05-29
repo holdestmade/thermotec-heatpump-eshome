@@ -61,9 +61,7 @@ connected, the AquaTemp phone app cannot connect, and vice-versa.
 | Path | Purpose |
 |---|---|
 | `esphome_thermotec_heatpump.yaml` | The ESPHome device configuration. |
-| `common/esp-config-default.yaml` | Shared base package: Wi-Fi, native API, OTA, fallback hotspot. |
 | `components/pool_heatpump_climate/` | Custom climate component that ties the switch/select/number/sensors into one HA climate entity. |
-| `secrets.yaml.example` | Template for the `!secret` values — copy to `secrets.yaml` and fill in. |
 | `Protocol.md` | Full BLE/Modbus protocol reference (register map, frames, error codes). |
 | `README.md` | This file. |
 
@@ -82,34 +80,12 @@ connected, the AquaTemp phone app cannot connect, and vice-versa.
 - [Home Assistant](https://www.home-assistant.io/) with the ESPHome / native
   API integration.
 
-### Secrets
-
-The base config (`common/esp-config-default.yaml`) reads your network and
-device credentials from `secrets.yaml` via `!secret`. Before flashing:
-
-```bash
-cp secrets.yaml.example secrets.yaml
-# then edit secrets.yaml with your Wi-Fi, API key and OTA password
-```
-
-`secrets.yaml` is intentionally **not** committed — keep your real credentials
-out of version control.
-
 ### How the pieces fit together
 
-Two parts of the config live outside the main YAML and are now included in
+Part of the config live outside the main YAML and is now included in
 this repo:
 
-1. **Base config package** (`common/esp-config-default.yaml`) — pulled in via:
-   ```yaml
-   packages:
-     device_base: !include common/esp-config-default.yaml
-   ```
-   Provides `wifi:`, `captive_portal:`, `api:` and `ota:`. It deliberately
-   omits `esphome:`, `esp32:`, `logger:` and `time:` (those stay in the device
-   file) so the merged packages don't collide.
-
-2. **Custom climate component** (`components/pool_heatpump_climate/`) — loaded
+   **Custom climate component** (`components/pool_heatpump_climate/`) — loaded
    as a local external component:
    ```yaml
    external_components:
@@ -132,20 +108,18 @@ this repo:
    `BLUENRG-XXXXXX` (the suffix is the last 3 bytes of the MAC). Scan with
    ESPHome's `esp32_ble_tracker`, the *nRF Connect* app, or `bluetoothctl`.
 
-2. **Create `secrets.yaml`** from the template (see *Secrets* above).
-
-3. **Edit `esphome_thermotec_heatpump.yaml`:**
+2. **Edit `esphome_thermotec_heatpump.yaml`:**
    - Set your pump's MAC under `ble_client: → mac_address`.
    - Adjust `board:` if you're not on an ESP32-C3.
    - The service/characteristic UUIDs (`0xFF01/0xFF02/0xFF03`) are standard
      for these PHNIX modules and rarely need changing.
 
-4. **Flash the ESP32:**
+3. **Flash the ESP32:**
    ```bash
    esphome run esphome_thermotec_heatpump.yaml
    ```
 
-5. **Adopt in Home Assistant.** The device appears via the ESPHome
+4. **Adopt in Home Assistant.** The device appears via the ESPHome
    integration; add it and the entities below show up automatically.
 
 ---
@@ -183,7 +157,7 @@ Version` · `Main Control Software Code` · `Last Connected`.
 
 ## Compatibility
 
-This was built and verified against a **Thermotec heat-only single-system**
+This was built and verified against a **Thermotec heat and cool single-system**
 pool heat pump, but the same PHNIX hardware/protocol is sold under many brands
 that use the **AquaTemp** app (PHNIX, AquaTemp, and various regional
 re-sellers). See [Protocol.md → *Scope and applicability*](Protocol.md) for the
