@@ -31,7 +31,6 @@ globals:
     initial_value: 'false'
     restore_value: no
 
-# ─── Logging ────────────────────────────────────────────────────────────────
 logger:
   level: INFO
   baud_rate: 115200
@@ -127,7 +126,6 @@ select:
           id: write_mode
           mode: !lambda 'return x;'
       - delay: 2s
-      # Re-poll so the target temperature display follows the new mode.
       - script.execute: poll_heat_pump
 
 binary_sensor:
@@ -675,9 +673,6 @@ climate:
     fan_sensor: output_high_fan
 
 script:
-  # Single source of truth for the "Has Error" rollup. Called from every
-  # fault binary_sensor's on_state and from error_code's on_value so the
-  # logic lives in exactly one place.
   - id: recompute_error_status
     then:
       - component.update: error_description
@@ -817,8 +812,6 @@ script:
 interval:
   - interval: 30s
     then:
-      # Only poll when the link is up — avoids a failed BLE write (and the
-      # accompanying warning) every 30 s while the pump is out of range.
       - if:
           condition:
             lambda: 'return id(ble_connected);'
