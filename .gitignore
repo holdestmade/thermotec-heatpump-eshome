@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# ESPHome build output
+.esphome/
+
+# Local secrets — never commit real credentials
+secrets.yaml

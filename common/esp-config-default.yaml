@@ -1,0 +1,42 @@
+# ─── Shared device base configuration ────────────────────────────────────────
+#
+# Pulled into a device config via:
+#
+#   packages:
+#     device_base: !include common/esp-config-default.yaml
+#
+# This package provides the connectivity / management boilerplate (Wi-Fi,
+# native API, OTA, fallback hotspot) so each device config only needs to
+# describe its own hardware. It deliberately does NOT define esphome:, esp32:,
+# logger: or time: — those live in the per-device file and would otherwise
+# collide when the packages are merged.
+#
+# The values below are read from secrets.yaml. Copy secrets.yaml.example to
+# secrets.yaml and fill it in before flashing:
+#
+#   wifi_ssid:     "MyNetwork"
+#   wifi_password: "super-secret"
+#   ap_password:   "fallback-hotspot-password"
+#   api_key:       "<base64 32-byte key, generate in the ESPHome dashboard>"
+#   ota_password:  "another-password"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Spin up a fallback access point if the configured network is unreachable.
+  ap:
+    ssid: "Heat Pump Fallback"
+    password: !secret ap_password
+
+# Lets you join the fallback AP and reconfigure Wi-Fi from a browser.
+captive_portal:
+
+# Native Home Assistant API (encrypted).
+api:
+  encryption:
+    key: !secret api_key
+
+# Over-the-air updates.
+ota:
+  - platform: esphome
+    password: !secret ota_password
