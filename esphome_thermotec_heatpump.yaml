@@ -187,15 +187,7 @@ binary_sensor:
     entity_category: diagnostic
     on_state:
       then:
-        - component.update: error_description
-        - lambda: |-
-            bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
   - platform: template
     id: outlet_temp_fault
@@ -204,15 +196,7 @@ binary_sensor:
     entity_category: diagnostic
     on_state:
       then:
-        - component.update: error_description
-        - lambda: |-
-            bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
   - platform: template
     id: ambient_temp_fault
@@ -221,15 +205,7 @@ binary_sensor:
     entity_category: diagnostic
     on_state:
       then:
-        - component.update: error_description
-        - lambda: |-
-            bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
   - platform: template
     id: coil_temp_fault
@@ -238,15 +214,7 @@ binary_sensor:
     entity_category: diagnostic
     on_state:
       then:
-        - component.update: error_description
-        - lambda: |-
-            bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
   - platform: template
     id: exhaust_temp_fault
@@ -255,15 +223,7 @@ binary_sensor:
     entity_category: diagnostic
     on_state:
       then:
-        - component.update: error_description
-        - lambda: |-
-            bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
   - platform: template
     id: unit_running
@@ -614,17 +574,7 @@ sensor:
     update_interval: never
     on_value:
       then:
-        - component.update: error_description
-        - lambda: |-
-            // CHANGED (from author): roll up the E-code register AND all the
-            // P-code temperature sensor faults into has_error.
-            bool err = (id(error_code).state != 0) ||
-                       id(inlet_temp_fault).state ||
-                       id(outlet_temp_fault).state ||
-                       id(ambient_temp_fault).state ||
-                       id(coil_temp_fault).state ||
-                       id(exhaust_temp_fault).state;
-            id(has_error).publish_state(err);
+        - script.execute: recompute_error_status
 
 text_sensor:
   - platform: template
@@ -642,11 +592,6 @@ text_sensor:
                now.year, now.month, now.day_of_month,
                now.hour, now.minute, now.second);
       return {buf};
-
-  - platform: template
-    id: current_mode
-    name: "Current Mode"
-    icon: "mdi:thermostat"
 
   - platform: template
     name: "Error Description"
@@ -730,6 +675,21 @@ climate:
     fan_sensor: output_high_fan
 
 script:
+  # Single source of truth for the "Has Error" rollup. Called from every
+  # fault binary_sensor's on_state and from error_code's on_value so the
+  # logic lives in exactly one place.
+  - id: recompute_error_status
+    then:
+      - component.update: error_description
+      - lambda: |-
+          bool err = (id(error_code).has_state() && id(error_code).state != 0) ||
+                     id(inlet_temp_fault).state ||
+                     id(outlet_temp_fault).state ||
+                     id(ambient_temp_fault).state ||
+                     id(coil_temp_fault).state ||
+                     id(exhaust_temp_fault).state;
+          id(has_error).publish_state(err);
+
   - id: poll_heat_pump
     then:
       - ble_client.ble_write:
@@ -747,7 +707,7 @@ script:
           service_uuid: ${service_uuid}
           characteristic_uuid: ${write_char_uuid}
           value: !lambda |-
-            // Declared up-front here. (Also: current_mode -> heater_mode.)
+            // Resolve the active mode so we target the right register.
             std::string mode_str = id(heater_mode).has_state()
                                    ? id(heater_mode).current_option()
                                    : std::string("Heat");
@@ -857,4 +817,10 @@ script:
 interval:
   - interval: 30s
     then:
-      - script.execute: poll_heat_pump
+      # Only poll when the link is up — avoids a failed BLE write (and the
+      # accompanying warning) every 30 s while the pump is out of range.
+      - if:
+          condition:
+            lambda: 'return id(ble_connected);'
+          then:
+            - script.execute: poll_heat_pump
