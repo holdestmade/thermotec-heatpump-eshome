@@ -20,47 +20,12 @@ external_components:
       path: components
     components: [pool_heatpump_climate]
 
-# ─── WHAT CHANGED IN THIS VERSION (vs the original deep-sleep / HA-helper config) ──
-#  * REMOVED: deep_sleep component + the whole on_boot wake/sleep state machine.
-#             The device is now mains/USB powered and stays awake permanently.
-#  * REMOVED: the four Home Assistant helper "mirror" entities (desired_*,
-#             prevent_deep_sleep). You no longer need to create ANY input_*
-#             helpers in HA. Control now lives natively on the ESP:
-#               - number  "Target Temperature"  (was input_number mirror)
-#               - switch  "Power"               (was input_boolean mirror)
-#               - select  "Mode"                (was input_select mirror)
-#             These are created automatically in HA by the API and act as BOTH
-#             the control and the live status readout (the BLE notify parser
-#             publishes the heat pump's real values back into them).
-#  * REMOVED: battery_voltage + battery_level sensors. They read the Firebeetle's
-#             on-board LiPo divider, which is meaningless when mains powered.
-#             (If you still run off a cell, ask and I'll drop them back in.)
-#  * REMOVED: the "reconcile HA helpers" sync block in ble_client on_connect.
-#             With the device always awake, every control change is written to
-#             the pump immediately by its own action, so there's nothing to
-#             reconcile on connect — we just read the pump and reflect it.
-#  * FIXED  (pre-existing bug): write_target_temp used `mode_str` before it was
-#             declared — that would NOT compile. Declaration moved up-front.
-#  * ADDED  (pre-existing gap): the notify parser published to heating_set_temp,
-#             cooling_set_temp, auto_set_temp, min/max_heat/cool_temp — but those
-#             sensors were never defined, so the original would not compile.
-#             Their definitions are added under the sensor: section.
-
-# ─── Globals ────────────────────────────────────────────────────────────────
 substitutions:
   service_uuid: "0000ff01-0000-1000-8000-00805f9b34fb"
   write_char_uuid: "0000ff03-0000-1000-8000-00805f9b34fb"
   notify_char_uuid: "0000ff02-0000-1000-8000-00805f9b34fb"
-  # REMOVED: the four `home_assistant_*` helper-name substitutions.
-  # Control is now native to ESPHome (see number:/switch:/select: below),
-  # so there are no HA helpers to point at any more.
 
-# ─── Globals ────────────────────────────────────────────────────────────────
 globals:
-  # Tracks whether the BLE link to the heat pump is up.
-  # CHANGED: no longer used for sleep gating (deep sleep is gone). It is still
-  # used by the ble_status binary sensor and is handy for conditional logic.
-  # NOT restored — BLE state from a previous boot is meaningless.
   - id: ble_connected
     type: bool
     initial_value: 'false'
@@ -71,28 +36,13 @@ logger:
   level: INFO
   baud_rate: 115200
   logs:
-    # Silence the noisy "Error reading char at handle 16, status=2" warning
-    # that fires once at boot — ble_client tries to read the notify
-    # characteristic at startup and the heat pump rejects it (notify-only).
     ble_sensor: ERROR
-    # Quieten per-publish state changes on routine sensor updates.
     sensor: WARN
 
-# ─── Time ───────────────────────────────────────────────────────────────────
-# Sync from HA over the API. Required for the last_connected text sensor
-# to display a human-readable timestamp.
 time:
   - platform: homeassistant
     id: ha_time
 
-# REMOVED: the deep_sleep: component. The device no longer sleeps.
-
-# ─── BLE ────────────────────────────────────────────────────────────────────
-# NOTE: now that the device is always awake you could relax this scan duty
-# cycle (e.g. interval: 320ms / window: 30ms) to lower CPU/RF load — the
-# aggressive window==interval was only there to win the connection race during
-# the brief deep-sleep wake window. Left aggressive here; it's harmless because
-# auto_connect stops scanning once connected.
 esp32_ble_tracker:
   scan_parameters:
     interval: 320ms
@@ -107,33 +57,18 @@ ble_client:
       then:
         - logger.log: "Heat pump connected"
         - lambda: 'id(ble_connected) = true;'
-        # Wait briefly for service discovery to complete, then poll.
         - delay: 3s
-        # Poll the heat pump. The notify parser populates every sensor AND
-        # reflects the pump's live power/mode/target back into the native
-        # Number/Switch/Select controls so HA shows the true current state.
         - script.execute: poll_heat_pump
-        # CHANGED: removed the old "Reconcile HA helpers" block (target/mode/
-        # power sync). It only mattered when a helper could change while the
-        # device was asleep. The device is always awake now, so every control
-        # change is written to the pump immediately by its own action.
         - component.update: last_connected
     on_disconnect:
       then:
         - logger.log: "Heat pump disconnected"
         - lambda: 'id(ble_connected) = false;'
 
-# ─── Native Controls (ADDED — replace the old HA helper mirrors) ─────────────
-# These three entities are created automatically in Home Assistant via the API.
-# Each is BOTH the control (writing to the pump on change) and the live status
-# readout (the BLE notify parser publishes the pump's real value back into it).
-# `optimistic: true` gives instant UI feedback; the next poll confirms/corrects.
 number:
   - platform: template
     name: "Target Temperature"
     id: target_temp_control
-    # Range covers both heat (15–40) and cool (10–35); write_target_temp
-    # clamps to the correct per-mode range before sending.
     min_value: 10
     max_value: 40
     step: 0.5
@@ -150,7 +85,6 @@ number:
           id: write_target_temp
           temp_x10: !lambda 'return (int)(x * 10);'
       - delay: 2s
-      # Re-poll to confirm the write took effect
       - script.execute: poll_heat_pump
 
 switch:
@@ -196,26 +130,13 @@ select:
       # Re-poll so the target temperature display follows the new mode.
       - script.execute: poll_heat_pump
 
-
-
-
-# ─── Binary Sensors ─────────────────────────────────────────────────────────
 binary_sensor:
-  # REMOVED: prevent_deep_sleep_switch  (no sleep to prevent).
-  # REMOVED: desired_power_state        (replaced by the native `switch` above).
-  # REMOVED: current_power_state        (folded into the native `switch` —
-  #          the notify parser now publishes the pump's power state into it).
-
-  # ── BLE link status ───────────────────────────────────────────────────────
   - platform: template
     id: ble_status
     name: "Heat Pump BLE Connection"
     device_class: connectivity
     lambda: 'return id(ble_connected);'
 
-  # ─── Diagnostic outputs ───────────────────────────────────────────────────
-  # output_compressor, output_circulate_pump, output_high_fan and output_4way_valve are
-  # decoded from the bitmask at register 0x07E3 in the notify response.
   - platform: template
     id: output_compressor
     name: "Compressor"
@@ -223,7 +144,7 @@ binary_sensor:
     device_class: running
     entity_category: diagnostic
     filters:
-      - delayed_on_off: 1s    # debounce: only publish if state holds for 1 second to remove the duplicate BLE responses
+      - delayed_on_off: 1s
 
   - platform: template
     id: output_circulate_pump
@@ -232,7 +153,7 @@ binary_sensor:
     device_class: running
     entity_category: diagnostic
     filters:
-      - delayed_on_off: 1s    # debounce: only publish if state holds for 1 second to remove the duplicate BLE responses
+      - delayed_on_off: 1s
 
   - platform: template
     id: output_high_fan
@@ -241,7 +162,7 @@ binary_sensor:
     device_class: running
     entity_category: diagnostic
     filters:
-      - delayed_on_off: 1s    # debounce: only publish if state holds for 1 second to remove the duplicate BLE responses
+      - delayed_on_off: 1s
 
   - platform: template
     id: output_4way_valve
@@ -250,7 +171,7 @@ binary_sensor:
     device_class: opening
     entity_category: diagnostic
     filters:
-      - delayed_on_off: 1s    # debounce: only publish if state holds for 1 second to remove the duplicate BLE responses
+      - delayed_on_off: 1s
 
   - platform: template
     id: has_error
@@ -259,13 +180,6 @@ binary_sensor:
     device_class: problem
     entity_category: diagnostic
 
-  # ─── Temperature sensor fault indicators (P-codes) ─────────────────────────
-  # NEW (from author): raised when a temperature register reads the pump's
-  # "sensor failure" sentinel value (see the pub_temp lambda in the parser).
-  # Each on_state recomputes the has_error rollup so it reflects both the
-  # E-code register and any sensor fault.
-  #   P01=Inlet (T02), P02=Outlet (T03), P04=Ambient (T05),
-  #   P05=Coil (T04),  P81=Exhaust (T06)
   - platform: template
     id: inlet_temp_fault
     name: "Inlet Temp Sensor Fault (P01)"
@@ -351,12 +265,6 @@ binary_sensor:
                        id(exhaust_temp_fault).state;
             id(has_error).publish_state(err);
 
-  # ─── Unit Running State ───────────────────────────────────────────────────
-  # NEW (from author): the heat pump's internal "I'm running" state
-  # (register 0x07DB). Differs from the Power switch:
-  #   - Power switch = the user's on/off command
-  #   - unit_running = actually operating (reads 0 even when powered on if the
-  #                    pump has safety-stopped due to a fault).
   - platform: template
     id: unit_running
     name: "Unit Running"
@@ -364,19 +272,7 @@ binary_sensor:
     device_class: running
     entity_category: diagnostic
 
-# ─── Sensors ────────────────────────────────────────────────────────────────
 sensor:
-  # REMOVED: desired_target_temp  (replaced by the native `number` above).
-  # REMOVED: current_target_temp  (folded into the native `number` — the notify
-  #          parser publishes the pump's reported target into target_temp_control).
-  # REMOVED: battery_voltage + battery_level (meaningless on mains/USB power).
-
-  # ── BLE Notification Parser (internal) ────────────────────────────────────
-  # This sensor subscribes to BLE notifications from the heat pump and parses
-  # each Modbus reply into the real sensors below. It has no value of its
-  # own — returning {} from the lambda means "don't publish".
-  #
-  # Each notification arrives as a std::vector<uint8_t> in `x`.
   - platform: ble_client
     type: characteristic
     ble_client_id: heatpump_ble
@@ -416,7 +312,6 @@ sensor:
       };
 
       if (block == 0x07FE) {
-        // NEW (from author): per-sensor failure detection. The heat pump
         // signals different failure sentinel values per sensor:
         //   T02 Inlet, T03 Outlet, T04 Coil, T06 Exhaust → 0x7FFD
         //   T05 Ambient                                  → 0xFFF6 (-1.0°C)
@@ -455,7 +350,6 @@ sensor:
         //   reg 22 (0x042C) = R11 Auto set
         // The heat pump's display shows whichever matches the current mode,
         // so we mirror that here.
-        // CHANGED: current_mode -> heater_mode (the native Select).
         std::string mode_str = id(heater_mode).has_state()
                                ? id(heater_mode).current_option()
                                : std::string("Heat");
@@ -463,7 +357,6 @@ sensor:
         if (mode_str == "Cool")      displayed_target = rd(5)  / 10.0;
         else if (mode_str == "Auto") displayed_target = rd(22) / 10.0;
         else                         displayed_target = rd(0)  / 10.0;
-        // CHANGED: publish into the native Number control (was current_target_temp).
         // Guarded by a 0.05°C delta to suppress duplicate BLE responses.
         if (!id(target_temp_control).has_state() ||
             fabsf(id(target_temp_control).state - displayed_target) > 0.05f) {
@@ -493,7 +386,6 @@ sensor:
         // Block containing register 0x03F3 at offset 10 = power state
         int16_t power = rd(10);
         bool is_on = (power != 0);
-        // CHANGED: publish into the native Switch control (was current_power_state).
         if (id(heater_power).state != is_on) {
           id(heater_power).publish_state(is_on);
         }
@@ -508,7 +400,6 @@ sensor:
           case 2:  mode_str = "Auto"; break;
           default: mode_str = "Unknown"; break;
         }
-        // CHANGED: publish into the native Select control (was current_mode).
         // Skip "Unknown" so we never push an option the Select doesn't list.
         std::string ms(mode_str);
         if (ms != "Unknown" &&
@@ -572,7 +463,6 @@ sensor:
           id(main_control_software_code).publish_state(code_str);
         }
 
-        // NEW (from author): unit running state at offset 10 (register 0x07DB).
         // 0 = stopped (may indicate self-shutdown after a fault), 1 = running.
         // Distinct from power state (0x03F3): power = user's on/off command,
         // unit_running = whether the pump is actually operating.
@@ -588,7 +478,6 @@ sensor:
       }
       return {};
 
-  # ── Temperature sensors (parsed from BLE notifications) ───────────────────
   - platform: template
     id: inlet_temp
     name: "Inlet Water Temperature"
@@ -597,7 +486,7 @@ sensor:
     state_class: measurement
     accuracy_decimals: 1
     filters:
-      - delta: 0.05   # only publish if value moved more than 0.05°C to remove the duplicate BLE responses
+      - delta: 0.05 
 
   - platform: template
     id: outlet_temp
@@ -607,7 +496,7 @@ sensor:
     state_class: measurement
     accuracy_decimals: 1
     filters:
-      - delta: 0.05   # only publish if value moved more than 0.05°C to remove the duplicate BLE responses
+      - delta: 0.05
 
   - platform: template
     id: coil_temp
@@ -617,7 +506,7 @@ sensor:
     state_class: measurement
     accuracy_decimals: 1
     filters:
-      - delta: 0.05   # only publish if value moved more than 0.05°C to remove the duplicate BLE responses
+      - delta: 0.05
 
   - platform: template
     id: ambient_temp
@@ -627,7 +516,7 @@ sensor:
     state_class: measurement
     accuracy_decimals: 1
     filters:
-      - delta: 0.05   # only publish if value moved more than 0.05°C to remove the duplicate BLE responses
+      - delta: 0.05
 
   - platform: template
     id: exhaust_temp
@@ -637,12 +526,8 @@ sensor:
     state_class: measurement
     accuracy_decimals: 1
     filters:
-      - delta: 0.05   # only publish if value moved more than 0.05°C to remove the duplicate BLE responses
+      - delta: 0.05
 
-  # ── Set-point & limit diagnostics (ADDED) ─────────────────────────────────
-  # These were referenced by the notify parser (block 0x0416) in the original
-  # config but never defined, which would have failed to compile. Defined here
-  # as read-only diagnostics. All are set via publish_state from the parser.
   - platform: template
     id: heating_set_temp
     name: "Heating Set Point"
@@ -720,22 +605,13 @@ sensor:
     filters:
       - delta: 0.05
 
-  # ─── Heat Pump Error Code (raw value) ─────────────────────────────────────────
-  # Reads register 0x07F2 from the heat pump. 0 = no error, non-zero = fault.
-  # The display shows error codes like E03 which appear to map to internal
-  # values with an off-by-one offset (E03 = value 4) OR a bitmask (E03 = Bit 2 aka 0x04).
-  # I haven't fully decoded the mapping yet, but capturing the raw code here allows
-  # for future decoding as more faults are encountered.
   - platform: template
     id: error_code
     name: "Error Code"
     icon: "mdi:alert-circle"
     entity_category: diagnostic
     accuracy_decimals: 0
-    # Set from the BLE notify parser, never independently polled
     update_interval: never
-    # When the raw code changes, push a translated description and the
-    # has-error binary state
     on_value:
       then:
         - component.update: error_description
@@ -750,14 +626,7 @@ sensor:
                        id(exhaust_temp_fault).state;
             id(has_error).publish_state(err);
 
-
-
-
-# ─── Text Sensors ───────────────────────────────────────────────────────────
 text_sensor:
-  # Wall-clock time of the last successful BLE connection. Acts as a heartbeat:
-  # if this value stops updating, the device isn't connecting properly.
-  # Updated from the ble_client on_connect handler.
   - platform: template
     name: "Last Connected"
     id: last_connected
@@ -774,23 +643,11 @@ text_sensor:
                now.hour, now.minute, now.second);
       return {buf};
 
-  # ─── Current Mode (read from BLE notify) ─────────────────────────────────
-  # Reflects the heat pump's actual mode as reported via BLE. Updated by the
-  # notify parser when block 0x03E9 arrives — register 0x03F4 at offset 11.
   - platform: template
     id: current_mode
     name: "Current Mode"
     icon: "mdi:thermostat"
 
-  # ─── Heat Pump Error Description ─────────────────────────────────────────────
-  # Translates the raw error code into the display code (E0n) and a
-  # description. Add new mappings here as you observe other faults.
-  #
-  # Confirmed mappings (from BLE capture analysis):
-  #   value 0 → No error
-  #   value 4 → E03: Water Flow (heat pump shows "E03" on its display)
-  #
-  # Other codes may be added once observed.
   - platform: template
     name: "Error Description"
     id: error_description
@@ -798,7 +655,6 @@ text_sensor:
     entity_category: diagnostic
     update_interval: never
     lambda: |-
-      // CHANGED (from author): aggregate ALL active faults into one string —
       // E-codes from the error register (now decoded as a bitmask, not a
       // single value) plus the P-code temperature sensor failures.
       std::string result;
@@ -832,11 +688,6 @@ text_sensor:
 
       return result.empty() ? std::string("OK") : result;
 
-  # ─── Advanced settings (read-only diagnostics) ────────────────────────────
-  # Although it is understood how to set these, it may be dangerous to set them
-  # incorrectly so they're implemented as read-only diagnostics for now.
-  # Change them using the AquaTemp app and the password "66" for the
-  # device parameters menu.
   - platform: template
     id: defrost_type
     name: "Defrost Type"
@@ -855,37 +706,18 @@ text_sensor:
     icon: "mdi:pump"
     entity_category: diagnostic
 
-  # ─── Master Program Version (register 0x07E1) ─────────────────────────────
-  # Displayed on the heat pump's control panel as "Master program version
-  # number". A DIGI5 value (scaled ×10), so raw 12 = "1.2".
   - platform: template
     name: "Master Program Version"
     id: master_program_version
     icon: "mdi:chip"
     entity_category: diagnostic
 
-  # ─── Main Control Software Code (register 0x07E2) ─────────────────────────
-  # Displayed on the heat pump's control panel as "Main control software
-  # code". A DIGI1 value (raw integer build code), e.g. 494.
   - platform: template
     name: "Main Control Software Code"
     id: main_control_software_code
     icon: "mdi:chip"
     entity_category: diagnostic
 
-# ─── Climate (ADDED) ──────────────────────────────────
-# Thermostat-style HA entity wrapping the Number/Switch/Select above. Modes:
-# Off/Heat/Cool/Auto — an exact 1:1 match to the underlying Mode select.
-# Target writes are delegated to target_temp_control, which already runs
-# write_target_temp; mode and power are delegated to heater_mode and
-# heater_power. All BLE writes still flow through the existing scripts.
-#
-# `compressor_sensor` + `fan_sensor` wire the climate's `action` (Heating /
-# Cooling / Fan / Idle) to the pump's actual output bitmask. Without these
-# the component would fall back to a temperature-delta guess and report
-# HEATING whenever current < target, even with the compressor off — which
-# was wrong. With them, action only goes HEATING/COOLING when the compressor
-# is genuinely running, and FAN when the fan is on by itself.
 climate:
   - platform: pool_heatpump_climate
     name: "Pool Heat Pump"
@@ -897,12 +729,7 @@ climate:
     compressor_sensor: output_compressor
     fan_sensor: output_high_fan
 
-# ─── Scripts ────────────────────────────────────────────────────────────────
 script:
-  # Send the Modbus "read all status" command to the heat pump.
-  # The heat pump replies with 4 fragmented notifications covering blocks
-  # 0x03E9, 0x0416, 0x07D1, 0x07FE — the BLE notify parser above picks
-  # them apart and publishes to the real sensors.
   - id: poll_heat_pump
     then:
       - ble_client.ble_write:
@@ -911,15 +738,6 @@ script:
           characteristic_uuid: ${write_char_uuid}
           value: [0x63, 0x03, 0x00, 0x07, 0x00, 0x2D, 0x3C, 0x54]
 
-  # Write a new target temperature to the register appropriate to the
-  # current operating mode:
-  #   Heat → 0x0416 (R01 Heating set)
-  #   Cool → 0x041B (R06 Cooling set)
-  #   Auto → 0x042C (R11 Auto set)
-  #
-  # If the current mode isn't known yet (e.g. first connect before the heat
-  # pump has been polled), default to heat target — that's the most common
-  # case and matches the previous behaviour.
   - id: write_target_temp
     parameters:
       temp_x10: int
@@ -929,8 +747,6 @@ script:
           service_uuid: ${service_uuid}
           characteristic_uuid: ${write_char_uuid}
           value: !lambda |-
-            // FIXED: in the original config `mode_str` was referenced inside the
-            // clamp block BELOW before it was declared — that would not compile.
             // Declared up-front here. (Also: current_mode -> heater_mode.)
             std::string mode_str = id(heater_mode).has_state()
                                    ? id(heater_mode).current_option()
@@ -974,10 +790,6 @@ script:
                      mode_str.c_str(), temp_x10 / 10.0, addr_hi, addr_lo);
             return msg;
 
-  # Write the power on/off state to register 0x03F3.
-  # Captured commands:
-  #   OFF: 63 10 03 F3 00 01 02 00 00 30 F1
-  #   ON:  63 10 03 F3 00 01 02 00 01 F1 31
   - id: write_power_state
     parameters:
       power_on: bool
@@ -1003,15 +815,6 @@ script:
             ESP_LOGI("heatpump", "Set power = %s", power_on ? "ON" : "OFF");
             return msg;
 
-  # Write the operating mode to register 0x03F4 (and 0x03F5).
-  # The app writes 2 consecutive registers — we replicate that exactly to
-  # match observed behaviour. Register 0x03F5's purpose isn't fully
-  # understood but appears mode-dependent.
-  #
-  # Captured commands (CRCs verified):
-  #   HEAT: 63 10 03 F4 00 02 04 00 00 00 00 1C 51
-  #   COOL: 63 10 03 F4 00 02 04 00 01 00 88 4D F7
-  #   AUTO: 63 10 03 F4 00 02 04 00 02 00 8C BC 34
   - id: write_mode
     parameters:
       mode: string
@@ -1051,10 +854,6 @@ script:
             ESP_LOGI("heatpump", "Set mode = %s", mode.c_str());
             return msg;
 
-# ─── Periodic Polling ───────────────────────────────────────────────────────
-# CHANGED: previously only effective while "awake" (deep-sleep prevented). The
-# device is now always powered, so this fires every 30s continuously to keep
-# all sensors and the Number/Switch/Select controls in sync with the pump.
 interval:
   - interval: 30s
     then:
